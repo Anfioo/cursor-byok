@@ -20,7 +20,12 @@ fn managed_data_dir() -> Result<PathBuf, std::io::Error> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| dirs_home_fallback())
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve home directory"))?;
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cannot resolve home directory",
+            )
+        })?;
     let dir = home.join(DATA_DIR_NAME);
     std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]

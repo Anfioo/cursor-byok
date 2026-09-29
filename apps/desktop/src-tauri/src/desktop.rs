@@ -79,17 +79,16 @@ fn create_main_window(
     let url = format!("http://{address}/__byok-api__/")
         .parse()
         .expect("local frontend URL");
-    let builder =
-        WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::External(url))
-            .title("Cursor BYOK")
-            .inner_size(820.0, 558.0)
-            .min_inner_size(820.0, 558.0)
-            .center()
-            .background_color(tauri::webview::Color(20, 20, 20, 255))
-            .decorations(cfg!(target_os = "macos"))
-            .shadow(true)
-            .resizable(true)
-            .visible(false);
+    let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::External(url))
+        .title("Cursor BYOK")
+        .inner_size(820.0, 558.0)
+        .min_inner_size(820.0, 558.0)
+        .center()
+        .background_color(tauri::webview::Color(20, 20, 20, 255))
+        .decorations(cfg!(target_os = "macos"))
+        .shadow(true)
+        .resizable(true)
+        .visible(false);
 
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -278,13 +277,9 @@ pub fn run() -> std::process::ExitCode {
                 if !runtime.exiting.swap(true, Ordering::AcqRel) {
                     api.prevent_exit();
                     let app = app.clone();
-                    let mut child = runtime
-                        .child
-                        .lock()
-                        .expect("child lock poisoned")
-                        .take();
+                    let child = runtime.child.lock().expect("child lock poisoned").take();
                     tauri::async_runtime::spawn(async move {
-                        if let Some(child) = child.as_mut() {
+                        if let Some(child) = child {
                             if let Err(error) = child.kill() {
                                 tracing::warn!(%error, "failed to kill cursor-server sidecar");
                             }
