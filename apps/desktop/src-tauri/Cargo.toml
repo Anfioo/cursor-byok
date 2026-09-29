@@ -12,8 +12,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-axum = "0.8"
-cursor-server = { path = "../../../server" }
+# sidecar 模式：不再把 cursor-server 链进本进程，而是作为外部二进制随包分发、运行时拉起。
+# 升级 cursor-server 只需替换 binaries/cursor-server-<triple>，不需要重新编译整个桌面壳。
+tauri-plugin-shell = "2"
 libc = "0.2"
 mimalloc = "0.1"
 rfd = "0.15"
@@ -28,7 +29,6 @@ tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 tempfile = "3"
 tokio = { version = "1", features = ["time"] }
-tokio-util = "0.7"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

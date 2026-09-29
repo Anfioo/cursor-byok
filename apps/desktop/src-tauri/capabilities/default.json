@@ -23,6 +23,8 @@
     "clipboard-manager:allow-write-text",
     "autostart:default",
     "process:allow-restart",
-    "updater:default"
+    "updater:default",
+    "shell:allow-spawn",
+    "shell:allow-kill"
   ]
 }

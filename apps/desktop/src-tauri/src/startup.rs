@@ -12,6 +12,34 @@ const LOG_DIRECTORY_NAME: &str = "logs";
 const LOG_FILE_PREFIX: &str = "cursor-byok";
 const LOG_FILE_SUFFIX: &str = "log";
 const RETAINED_LOG_FILES: usize = 15;
+const DATA_DIR_NAME: &str = ".cursor-byok-v3";
+
+/// 与 server 端 cursor_server::config::managed_data_dir() 保持一致:
+/// ~/.cursor-byok-v3。sidecar 模式下桌面壳不再链接 server 库,这里内联一份。
+fn managed_data_dir() -> Result<PathBuf, std::io::Error> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs_home_fallback())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve home directory"))?;
+    let dir = home.join(DATA_DIR_NAME);
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir)
+}
+
+#[cfg(target_os = "windows")]
+fn dirs_home_fallback() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").map(PathBuf::from)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dirs_home_fallback() -> Option<PathBuf> {
+    None
+}
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
@@ -22,7 +50,7 @@ pub(crate) struct StartupDiagnostics {
 
 impl StartupDiagnostics {
     pub(crate) fn initialize() -> Result<Self, BoxError> {
-        let log_directory = cursor_server::config::managed_data_dir()?.join(LOG_DIRECTORY_NAME);
+        let log_directory = managed_data_dir()?.join(LOG_DIRECTORY_NAME);
         std::fs::create_dir_all(&log_directory)?;
 
         let file_appender = RollingFileAppender::builder()

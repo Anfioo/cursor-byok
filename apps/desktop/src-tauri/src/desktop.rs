@@ -1,5 +1,5 @@
 use std::{
-    process::{Command, ExitCode},
+    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -7,35 +7,25 @@ use std::{
     time::Duration,
 };
 
-use axum::{
-    extract::{Extension, Json},
-    http::StatusCode,
-    routing::post,
-    Router,
-};
-use tauri::{
-    async_runtime::JoinHandle, webview::Color, AppHandle, Manager, RunEvent, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder,
-};
-use tauri_plugin_opener::OpenerExt;
-use tokio_util::sync::CancellationToken;
+use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::ShellExt;
 
-#[cfg(dev)]
-use cursor_server::config::ConsoleSource;
-use cursor_server::{App, Config, Result};
-
-#[cfg(not(dev))]
-use crate::frontend;
 use crate::startup::{self, StartupDiagnostics};
 use crate::tray;
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 const AUTOSTART_ARG: &str = "--autostart";
+/// sidecar 就绪等待上限(秒)。
+const SIDECAR_READY_TIMEOUT_SECS: u64 = 30;
+/// 健康检查轮询间隔。
+const SIDECAR_POLL_INTERVAL_MS: u64 = 150;
 
 struct DesktopRuntime {
-    shutdown: CancellationToken,
-    server: Mutex<Option<JoinHandle<Result<()>>>>,
+    /// sidecar 子句柄;退出时 kill 掉。
+    child: Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
     exiting: AtomicBool,
+    /// 本地服务实际监听地址(由父进程选空闲端口后通过环境变量传给 sidecar)。
     server_addr: std::net::SocketAddr,
 }
 
@@ -82,57 +72,24 @@ fn open_terminal_with_command(command: String) -> tauri::Result<()> {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct OpenExternalUrlRequest {
-    url: String,
-}
-
-fn open_external_url(app: &AppHandle, url: &str) -> std::result::Result<(), String> {
-    let parsed = url::Url::parse(url).map_err(|error| format!("invalid URL: {error}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err("only absolute HTTP and HTTPS URLs are allowed".into());
-    }
-
-    app.opener()
-        .open_url(parsed.as_str(), None::<&str>)
-        .map_err(|error| format!("failed to open URL: {error}"))
-}
-
-async fn open_external_url_handler(
-    Extension(app): Extension<AppHandle>,
-    Json(request): Json<OpenExternalUrlRequest>,
-) -> std::result::Result<StatusCode, (StatusCode, String)> {
-    open_external_url(&app, &request.url)
-        .map(|_| StatusCode::NO_CONTENT)
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))
-}
-
-fn desktop_api_router(app: AppHandle) -> Router {
-    Router::new()
-        .route(
-            "/__byok-api__/api/desktop/open-external-url",
-            post(open_external_url_handler),
-        )
-        .layer(Extension(app))
-}
-
 fn create_main_window(
     app: &AppHandle,
     address: std::net::SocketAddr,
-) -> tauri::Result<WebviewWindow> {
+) -> tauri::Result<tauri::WebviewWindow> {
     let url = format!("http://{address}/__byok-api__/")
         .parse()
         .expect("local frontend URL");
-    let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::External(url))
-        .title("Cursor BYOK")
-        .inner_size(820.0, 558.0)
-        .min_inner_size(820.0, 558.0)
-        .center()
-        .background_color(Color(20, 20, 20, 255))
-        .decorations(cfg!(target_os = "macos"))
-        .shadow(true)
-        .resizable(true)
-        .visible(false);
+    let builder =
+        WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::External(url))
+            .title("Cursor BYOK")
+            .inner_size(820.0, 558.0)
+            .min_inner_size(820.0, 558.0)
+            .center()
+            .background_color(tauri::webview::Color(20, 20, 20, 255))
+            .decorations(cfg!(target_os = "macos"))
+            .shadow(true)
+            .resizable(true)
+            .visible(false);
 
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -157,12 +114,34 @@ pub(crate) fn open_main_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn run() -> ExitCode {
+/// 选一个本机空闲端口。存在极小的 TOCTOU 窗口(选完到子进程 bind 之间被抢走),
+/// 命中时 sidecar 会 bind 失败退出,下方就绪等待会超时并报错,可接受。
+fn pick_free_port() -> tauri::Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    Ok(listener.local_addr()?.port())
+}
+
+/// 轮询 TCP 连通,直到 sidecar 开始监听或超时。
+fn wait_for_sidecar(addr: &std::net::SocketAddr, timeout: Duration) -> tauri::Result<()> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if std::net::TcpStream::connect(addr).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(SIDECAR_POLL_INTERVAL_MS));
+    }
+    Err(tauri::Error::from(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("cursor-server sidecar 未在 {} 秒内就绪", timeout.as_secs()),
+    )))
+}
+
+pub fn run() -> std::process::ExitCode {
     let diagnostics = match StartupDiagnostics::initialize() {
         Ok(diagnostics) => diagnostics,
         Err(error) => {
             startup::report_logging_failure(error.as_ref());
-            return ExitCode::FAILURE;
+            return std::process::ExitCode::FAILURE;
         }
     };
     #[cfg(unix)]
@@ -171,7 +150,7 @@ pub fn run() -> ExitCode {
             Ok(limit) => limit,
             Err(error) => {
                 diagnostics.report_fatal(&error);
-                return ExitCode::FAILURE;
+                return std::process::ExitCode::FAILURE;
             }
         };
         tracing::info!(
@@ -187,7 +166,7 @@ pub fn run() -> ExitCode {
         os = std::env::consts::OS,
         architecture = std::env::consts::ARCH,
         log_directory = %diagnostics.log_directory().display(),
-        "desktop starting"
+        "desktop starting (sidecar mode)"
     );
 
     let started_by_autostart = std::env::args_os().any(|arg| arg == AUTOSTART_ARG);
@@ -203,6 +182,7 @@ pub fn run() -> ExitCode {
                 let _ = open_main_window(app);
             }
         }))
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -212,54 +192,66 @@ pub fn run() -> ExitCode {
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                 Some(vec![AUTOSTART_ARG]),
             ))?;
-            let config = {
-                let mut config = Config::desktop()?;
-                // 插件的 minAppVersion 按桌面应用版本判定,而不是内嵌 server 库的版本。
-                config.app_version = env!("CARGO_PKG_VERSION").into();
-                config
-            };
+
+            // 1. 选空闲端口
+            let port = pick_free_port()?;
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+
+            // 2. 组装 sidecar 环境变量
+            let mut sidecar_cmd = app
+                .shell()
+                .sidecar("cursor-server")?
+                .env("CURSOR_LISTEN_ADDR", format!("127.0.0.1:{port}"));
+
+            // 开发模式:前端由 Vite(1420)提供,sidecar 反代过去;
+            // 打包模式:前端 dist 作为资源随包分发,通过 CURSOR_CONSOLE_DIR 指给 sidecar。
             #[cfg(dev)]
-            let config = {
-                let mut config = config;
-                config.console = Some(ConsoleSource::Proxy(
-                    "http://127.0.0.1:1420"
-                        .parse()
-                        .expect("Vite development URL"),
-                ));
-                config
-            };
-            let server = tauri::async_runtime::block_on(App::new(config))?
-                .merge_router(desktop_api_router(app.handle().clone()));
+            {
+                sidecar_cmd =
+                    sidecar_cmd.env("CURSOR_CONSOLE_PROXY", "http://127.0.0.1:1420");
+            }
             #[cfg(not(dev))]
-            let server = server.merge_router(frontend::router(app.handle().clone()));
-            let listener = tauri::async_runtime::block_on(server.bind())?;
-            let address = listener.local_addr()?;
-            tauri::async_runtime::block_on(server.harness().cleanup_stale_settings())?;
-            let desktop_settings =
-                tauri::async_runtime::block_on(server.store().desktop_settings())
-                    .unwrap_or_default();
-            #[cfg(target_os = "macos")]
-            app.handle()
-                .set_dock_visibility(desktop_settings.show_dock_icon)?;
-            let shutdown = CancellationToken::new();
-            let server_shutdown = shutdown.clone();
-            let app_handle = app.handle().clone();
-            let task = tauri::async_runtime::spawn(async move {
-                let result = server.serve_on(listener, server_shutdown).await;
-                if let Err(error) = &result {
-                    tracing::error!(%error, "desktop server stopped unexpectedly");
-                    app_handle.exit(1);
+            {
+                let resource_dir = app.path().resource_dir()?;
+                let dist_dir = resource_dir.join("dist");
+                tracing::info!(?dist_dir, "serving console from bundled dist");
+                sidecar_cmd = sidecar_cmd
+                    .env("CURSOR_CONSOLE_DIR", dist_dir.to_string_lossy().to_string());
+            }
+
+            // 3. 拉起 sidecar
+            let (mut rx, child) = sidecar_cmd.spawn()?;
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        CommandEvent::Stdout(line) => {
+                            tracing::info!(target: "cursor-server", "{}", String::from_utf8_lossy(&line));
+                        }
+                        CommandEvent::Stderr(line) => {
+                            tracing::warn!(target: "cursor-server", "{}", String::from_utf8_lossy(&line));
+                        }
+                        CommandEvent::Error(err) => {
+                            tracing::error!(target: "cursor-server", "sidecar error: {err}");
+                        }
+                        other => {
+                            tracing::info!(target: "cursor-server", "sidecar event: {other:?}");
+                        }
+                    }
                 }
-                result
             });
+
+            // 4. 等 sidecar 就绪
+            wait_for_sidecar(&addr, Duration::from_secs(SIDECAR_READY_TIMEOUT_SECS))?;
+            tracing::info!(%addr, "cursor-server sidecar ready");
+
             app.manage(DesktopRuntime {
-                shutdown,
-                server: Mutex::new(Some(task)),
+                child: Mutex::new(Some(child)),
                 exiting: AtomicBool::new(false),
-                server_addr: address,
+                server_addr: addr,
             });
-            if desktop_settings.silent_start && started_by_autostart {
-                tracing::info!("silent autostart enabled; starting without the main window");
+
+            if started_by_autostart {
+                tracing::info!("autostart launch; starting without the main window");
             } else {
                 open_main_window(app.handle())?;
             }
@@ -272,33 +264,29 @@ pub fn run() -> ExitCode {
         Ok(app) => app,
         Err(error) => {
             diagnostics.report_fatal(&error);
-            return ExitCode::FAILURE;
+            return std::process::ExitCode::FAILURE;
         }
     };
 
     app.run(|app, event| match event {
-        // code 为 None 表示所有窗口已被关闭(轻量模式),阻止退出,
-        // 转发服务继续在托盘后台运行;code 为 Some 时是显式退出请求。
         RunEvent::ExitRequested { code, api, .. } => match code {
+            // code 为 None 表示所有窗口已被关闭(轻量模式),阻止退出,
+            // sidecar 继续在托盘后台运行;code 为 Some 时是显式退出请求。
             None => api.prevent_exit(),
             Some(_) => {
                 let runtime = app.state::<DesktopRuntime>();
                 if !runtime.exiting.swap(true, Ordering::AcqRel) {
                     api.prevent_exit();
-                    runtime.shutdown.cancel();
-                    let server = runtime.server.lock().expect("server lock poisoned").take();
                     let app = app.clone();
+                    let mut child = runtime
+                        .child
+                        .lock()
+                        .expect("child lock poisoned")
+                        .take();
                     tauri::async_runtime::spawn(async move {
-                        if let Some(server) = server {
-                            match tokio::time::timeout(Duration::from_secs(11), server).await {
-                                Ok(Ok(Ok(()))) => {}
-                                Ok(Ok(Err(error))) => {
-                                    tracing::error!(%error, "desktop server shutdown failed")
-                                }
-                                Ok(Err(error)) => {
-                                    tracing::error!(%error, "desktop server task failed")
-                                }
-                                Err(_) => tracing::warn!("desktop server shutdown timed out"),
+                        if let Some(child) = child.as_mut() {
+                            if let Err(error) = child.kill() {
+                                tracing::warn!(%error, "failed to kill cursor-server sidecar");
                             }
                         }
                         app.exit(0);
@@ -316,5 +304,5 @@ pub fn run() -> ExitCode {
         _ => {}
     });
 
-    ExitCode::SUCCESS
+    std::process::ExitCode::SUCCESS
 }
