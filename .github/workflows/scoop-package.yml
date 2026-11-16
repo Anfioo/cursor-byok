@@ -104,7 +104,7 @@ jobs:
           $summary = @'
           ## Scoop manifest
 
-          Paste these into `bucket/cursor-proxy.json`, then commit and push the bucket:
+          Paste these into `bucket/wingharness-cursor-proxy.json`, then commit and push the bucket:
 
           ```json
           "version": "{0}",
