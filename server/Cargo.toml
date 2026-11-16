@@ -1,4 +1,4 @@
-# Defines the server crate, binaries, and dependency graph.
+﻿# Defines the server crate, binaries, and dependency graph.
 [package]
 name = "cursor-server"
 version = "0.1.0"
@@ -22,6 +22,7 @@ chrono = "0.4"
 chrono-tz = "0.10"
 dom_smoothie = "0.18"
 dirs = "6"
+dotenvy = "0.15"
 encoding_rs = "0.8"
 eventsource-stream = "0.2"
 futures-util = "0.3"

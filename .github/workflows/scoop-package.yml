@@ -1,0 +1,115 @@
+name: Package Scoop plugin
+
+# A tag named scoop-v<version> builds the WingHarness plugin package and attaches
+# the zip to its own GitHub Release, so the bucket manifest points at an https
+# asset instead of a local file. The version comes from server\Cargo.toml, and
+# the job summary prints the version / url / hash to paste into the manifest.
+#
+#   git tag scoop-v0.1.0
+#   git push origin scoop-v0.1.0
+#
+# The desktop app keeps its own v<version> tags and workflow; the two never
+# share a release.
+
+on:
+  push:
+    tags:
+      - "scoop-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scoop-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build and publish the plugin zip
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release author
+        shell: bash
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          if [[ "${GITHUB_ACTOR}" != "${REPOSITORY_OWNER}" ]]; then
+            echo "Only ${REPOSITORY_OWNER} may publish a release" >&2
+            exit 1
+          fi
+
+      - name: Read and verify the plugin version
+        id: version
+        shell: pwsh
+        run: |
+          $cargo = Get-Content -Raw 'server\Cargo.toml'
+          $version = [regex]::Match($cargo, '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"').Groups[1].Value
+          if (-not $version) { throw 'could not read the version from server\Cargo.toml' }
+          if ("scoop-v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME does not match server\Cargo.toml version $version; expected scoop-v$version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install web console dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build the plugin zip
+        shell: pwsh
+        run: ./package.ps1 -OutDir dist
+
+      - name: Publish the release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $tag = "scoop-v$env:VERSION"
+          $name = "cursor-proxy-$env:VERSION.zip"
+          $asset = "dist/$name"
+          if (-not (Test-Path $asset)) { throw "$asset was not produced" }
+
+          gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            # make_latest is false on purpose: the desktop app's README links to
+            # /releases/latest, which has to stay on the newest app release.
+            gh api -X POST "repos/$env:GITHUB_REPOSITORY/releases" `
+              -f tag_name=$tag `
+              -f name="Scoop plugin $env:VERSION" `
+              -f make_latest=false `
+              -f body="cursor-byok packaged as a Scoop app for WingHarness. Settings and the SQLite file live in the persist folder and survive ``scoop update``."
+            if ($LASTEXITCODE -ne 0) { throw "could not create release $tag" }
+          }
+
+          gh release upload $tag $asset --clobber
+          if ($LASTEXITCODE -ne 0) { throw "could not upload $asset" }
+
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$name"
+
+          $summary = @'
+          ## Scoop manifest
+
+          Paste these into `bucket/cursor-proxy.json`, then commit and push the bucket:
+
+          ```json
+          "version": "{0}",
+          "url": "{1}",
+          "hash": "{2}"
+          ```
+          '@
+          $summary -f $env:VERSION, $url, $hash | Add-Content $env:GITHUB_STEP_SUMMARY

@@ -1,0 +1,66 @@
+{
+  "name": "Cursor 代理",
+  "version": "0.1.0",
+  "description": "cursor-byok —— 把 Cursor 的请求转给自建模型渠道，自带 Web 控制台。设置与数据库保存在插件的持久化目录里，首次启动自动生成一个随机访问密钥。",
+  "entry": "start.cmd",
+  "stopScript": "stop.cmd",
+  "ui": "http://{CURSOR_LISTEN_ADDR}/__byok-api__/",
+  "configFiles": [
+    {
+      "type": "env",
+      "path": ".env",
+      "startmust": false,
+      "fields": [
+        {
+          "key": "CURSOR_LISTEN_ADDR",
+          "label": "监听地址",
+          "type": "string",
+          "default": "127.0.0.1:24680",
+          "hint": "要带端口，例如 127.0.0.1:24680。插件页面和接口都用这个地址，改完要重启插件。写成 0.0.0.0:24680 会暴露到局域网，页面地址也得换成这台机器的 IP。"
+        },
+        {
+          "key": "CURSOR_CONSOLE_DIR",
+          "label": "控制台目录",
+          "type": "string",
+          "default": "dist",
+          "hint": "Web 控制台静态文件的位置，相对插件目录。留空或删掉这一行，服务端会自动找 dist。"
+        },
+        {
+          "key": "CURSOR_EXTERNAL_API_KEY",
+          "label": "访问密钥",
+          "type": "string",
+          "default": "",
+          "hint": "外部调用这个代理时要带上的密钥。留空时脚本首次启动会生成一个随机值；配置里已有密钥时会被它播种进数据库。改完要重启插件。"
+        },
+        {
+          "key": "CURSOR_DATABASE_URL",
+          "label": "数据库地址",
+          "type": "string",
+          "default": "sqlite://./data/cursor-byok.db",
+          "hint": "存放渠道、模型和调用记录的 SQLite 文件，相对插件的持久化目录。除非要把数据挪到别处，否则不用改。"
+        },
+        {
+          "key": "CURSOR_PROVIDER_TIMEOUT_SECONDS",
+          "label": "上游超时（秒）",
+          "type": "number",
+          "default": 60,
+          "min": 1,
+          "hint": "等待上游模型返回的秒数上限，留空用默认值。模型很慢或经常超时就调大。"
+        },
+        {
+          "key": "RUST_LOG",
+          "label": "日志级别",
+          "type": "select",
+          "default": "info",
+          "options": [
+            { "value": "error", "label": "error（只记错误）" },
+            { "value": "warn", "label": "warn" },
+            { "value": "info", "label": "info（默认）" },
+            { "value": "debug", "label": "debug（排查用，日志很大）" },
+            { "value": "trace", "label": "trace（非常详细）" }
+          ]
+        }
+      ]
+    }
+  ]
+}
