@@ -20,7 +20,7 @@ use cursor_server::{
         OPENAI_RESPONSES_ENDPOINT,
     },
     network::NetworkClients,
-    plugin::{PluginRegistry, PluginRuntime},
+    plugin::{PluginRegistry, PluginRuntime, ADAPTER_ID_PREFIX},
     provider::{FinishReason, ModelEvent, ProviderRouter},
     store::ExternalApiSettings,
 };
@@ -221,11 +221,14 @@ async fn duplicate_public_model_ids_use_the_first_configured_model() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let models = serde_json::from_str::<Value>(&body).unwrap();
+    // Configured models are listed first. An installed plugin runtime appends
+    // its own `plugin:` models, which this test is not about.
     let ids = models["data"]
         .as_array()
         .unwrap()
         .iter()
         .map(|model| model["id"].as_str().unwrap())
+        .filter(|id| !id.starts_with(ADAPTER_ID_PREFIX))
         .collect::<Vec<_>>();
     assert_eq!(ids, ["work/qwen/model", "work/qwen/other"]);
 
