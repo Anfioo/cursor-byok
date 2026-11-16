@@ -35,14 +35,26 @@ jobs:
         with:
           workspaces: ". -> target"
 
-      # The desktop shell ships cursor-server as an external binary, and
-      # tauri-build fails while binaries/cursor-server-<triple> is missing.
-      # That directory is git-ignored, so it is staged here first.
-      - name: Stage the cursor-server sidecar
-        run: bash scripts/stage-sidecar.sh
-
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      # The desktop crate's build script validates both of the shell's bundle
+      # inputs, and neither is in git: binaries/cursor-server-<triple> and the
+      # web console under apps/desktop/dist. Produce both before compiling.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build the web console
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+
+      - name: Stage the cursor-server sidecar
+        run: bash scripts/stage-sidecar.sh
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -90,9 +102,21 @@ jobs:
         with:
           workspaces: ". -> target"
 
-      # The desktop shell ships cursor-server as an external binary, and
-      # tauri-build fails while binaries/cursor-server-<triple> is missing.
-      # That directory is git-ignored, so it is staged here first.
+      # The desktop crate's build script validates both of the shell's bundle
+      # inputs, and neither is in git: binaries/cursor-server-<triple> and the
+      # web console under apps/desktop/dist. Produce both before compiling.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build the web console
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+
       - name: Stage the cursor-server sidecar
         shell: bash
         run: bash scripts/stage-sidecar.sh
