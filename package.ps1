@@ -1,53 +1,68 @@
-# 打包脚本:把 cursor-server + 前端 dist + .env + 启动脚本 组装到 output/
-# 用法:  pwsh ./package.ps1
-# 产物:  output/
-#          ├── cursor-server.exe
-#          ├── dist/                  (前端静态文件)
-#          ├── .env                   (配置,首次运行从 .env.example 复制)
-#          ├── start.bat              (双击启动)
-#          └── data/                  (SQLite 数据库,自动生成)
+# Builds the Scoop plugin package for WingHarness: cursor-server, the web
+# console, and the plugin metadata in packaging/, zipped so a bucket manifest
+# can install it.
+#
+#   pwsh ./package.ps1                                   # -> dist/
+#   pwsh ./package.ps1 -OutDir M:\AnfiooScoopBuckets\dist # -> the bucket
+#
+# The zip is flat: plugin.json, start.cmd, stop.cmd, init-env.ps1,
+# cursor-server.exe and dist/ at the root.
 
-$ErrorActionPreference = "Stop"
-$root = $PSScriptRoot
-Set-Location $root
+param(
+    [string] $OutDir = (Join-Path $PSScriptRoot 'dist')
+)
 
-Write-Host "==> [1/4] 编译 release cursor-server" -ForegroundColor Cyan
+$ErrorActionPreference = 'Stop'
+Set-Location $PSScriptRoot
+
+# The server crate owns the version; the packaged plugin.json is stamped with
+# it, and the bucket manifest repeats it.
+$cargo = Get-Content -Raw 'server\Cargo.toml'
+$version = [regex]::Match($cargo, '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"').Groups[1].Value
+if (-not $version) { throw 'could not read the version from server\Cargo.toml' }
+
+Write-Host "==> [1/4] building cursor-server $version"
 cargo build --release --package cursor-server --bin cursor-server
+if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
-Write-Host "==> [2/4] 编译前端 dist" -ForegroundColor Cyan
-Push-Location apps\desktop
-npm run build
-Pop-Location
+Write-Host '==> [2/4] building the web console'
+npm --prefix apps/desktop run build
+if ($LASTEXITCODE -ne 0) { throw 'the web console build failed' }
 
-Write-Host "==> [3/4] 组装 output/" -ForegroundColor Cyan
-$out = Join-Path $root "output"
-if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-New-Item -ItemType Directory -Path $out | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $out "data") | Out-Null
+Write-Host '==> [3/4] staging the plugin'
+$stage = Join-Path $PSScriptRoot 'output'
+if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+New-Item -ItemType Directory -Path $stage | Out-Null
 
-Copy-Item "target\release\cursor-server.exe" $out
-Copy-Item -Recurse "apps\desktop\dist" (Join-Path $out "dist")
+Copy-Item 'packaging\*' $stage -Recurse
+Copy-Item 'target\release\cursor-server.exe' $stage
+Copy-Item -Recurse 'apps\desktop\dist' (Join-Path $stage 'dist')
 
-# .env:已存在则保留,否则从模板复制
-$envFile = Join-Path $out ".env"
-if (-not (Test-Path $envFile)) {
-    Copy-Item ".env.example" $envFile
-}
+$manifest = Join-Path $stage 'plugin.json'
+$json = Get-Content -Raw $manifest
+$json = [regex]::Replace($json, '"version"\s*:\s*"[^"]*"', '"version": "' + $version + '"')
+Set-Content -Path $manifest -Value $json -Encoding utf8NoBOM
 
-# start.bat
-$bat = @'
-@echo off
-chcp 65001 >nul
-cd /d "%~dp0"
-echo Starting cursor-byok...
-echo Dashboard: http://127.0.0.1:3000/__byok-api__/
-start "" http://127.0.0.1:3000/__byok-api__/
-cursor-server.exe
-pause
-'@
-Set-Content -Path (Join-Path $out "start.bat") -Value $bat -Encoding ASCII
+Write-Host '==> [4/4] zipping'
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$zip = Join-Path $OutDir "cursor-proxy-$version.zip"
+if (Test-Path $zip) { Remove-Item -Force $zip }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $stage,
+    $zip,
+    [System.IO.Compression.CompressionLevel]::Optimal,
+    $false
+)
 
-Write-Host "==> [4/4] 完成" -ForegroundColor Green
-Write-Host "产物目录: $out"
-Write-Host "把整个 output/ 文件夹拷到别的电脑,双击 start.bat 即可。"
-Write-Host "配置在 output\.env,先改 CURSOR_EXTERNAL_API_KEY 和 CURSOR_LISTEN_ADDR。"
+$hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+$url = 'file:///' + ($zip -replace '\\', '/')
+
+Write-Host ''
+Write-Host "zip:  $zip"
+Write-Host "hash: $hash"
+Write-Host ''
+Write-Host 'bucket manifest:'
+Write-Host ('  "version": "' + $version + '"')
+Write-Host ('  "url": "' + $url + '"')
+Write-Host ('  "hash": "' + $hash + '"')
