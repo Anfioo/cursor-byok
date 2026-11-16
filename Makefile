@@ -1,13 +1,6 @@
 LOCAL_TAURI_SIGNING_KEY := $(CURDIR)/.tauri/cursor-byok.local.key
-CARGO_TARGET_TRIPLE := $(shell rustc -vV | sed -n 's/host: //p')
-SIDECAR_DIR := $(CURDIR)/apps/desktop/src-tauri/binaries
 # sidecar 模式:调试构建(供 tauri dev)用 debug,发布构建用 release
 SIDE_PROFILE ?= debug
-ifeq ($(SIDE_PROFILE),release)
-CARGO_PROFILE_DIR := release
-else
-CARGO_PROFILE_DIR := debug
-endif
 
 .PHONY: check dev-web dev-server dev-desktop build-web build-server build-desktop build-docker build-sidecar
 
@@ -38,12 +31,7 @@ build-server:
 #   make build-sidecar                # debug,供 make dev-desktop / tauri dev
 #   make build-sidecar SIDE_PROFILE=release
 build-sidecar:
-	@echo "==> building cursor-server ($(SIDE_PROFILE)) for $(CARGO_TARGET_TRIPLE)"
-	cargo build --package cursor-server --bin cursor-server $(if $(filter release,$(SIDE_PROFILE)),--release,)
-	@install -d "$(SIDECAR_DIR)"
-	@cp -f "target/$(CARGO_PROFILE_DIR)/cursor-server$(if $(filter windows_nt,$(OS)),.exe,)" \
-	        "$(SIDECAR_DIR)/cursor-server-$(CARGO_TARGET_TRIPLE)$(if $(filter Windows_NT,$(OS)),.exe,)"
-	@echo "==> sidecar ready: $(SIDECAR_DIR)/cursor-server-$(CARGO_TARGET_TRIPLE)"
+	bash scripts/stage-sidecar.sh $(SIDE_PROFILE)
 
 ifeq ($(OS),Windows_NT)
 $(LOCAL_TAURI_SIGNING_KEY):

@@ -123,6 +123,14 @@ jobs:
         with:
           workspaces: ". -> target"
 
+      # The shell bundles cursor-server as an external binary, and tauri-build
+      # fails while binaries/cursor-server-<triple> is missing. That directory
+      # is git-ignored, so it is staged here first, as a release build so the
+      # installers ship an optimized server.
+      - name: Stage the cursor-server sidecar
+        shell: bash
+        run: bash scripts/stage-sidecar.sh release
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22

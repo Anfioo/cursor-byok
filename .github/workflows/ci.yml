@@ -35,6 +35,12 @@ jobs:
         with:
           workspaces: ". -> target"
 
+      # The desktop shell ships cursor-server as an external binary, and
+      # tauri-build fails while binaries/cursor-server-<triple> is missing.
+      # That directory is git-ignored, so it is staged here first.
+      - name: Stage the cursor-server sidecar
+        run: bash scripts/stage-sidecar.sh
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -83,6 +89,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+
+      # The desktop shell ships cursor-server as an external binary, and
+      # tauri-build fails while binaries/cursor-server-<triple> is missing.
+      # That directory is git-ignored, so it is staged here first.
+      - name: Stage the cursor-server sidecar
+        shell: bash
+        run: bash scripts/stage-sidecar.sh
 
       - name: Run platform Clippy
         run: cargo clippy --package cursor-byok-desktop --all-targets -- -D warnings
