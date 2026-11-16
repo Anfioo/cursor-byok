@@ -1,0 +1,2 @@
+# Shell scripts run under bash on every platform, and bash cannot parse CRLF.
+*.sh text eol=lf
