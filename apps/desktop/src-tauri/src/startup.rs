@@ -19,7 +19,7 @@ const DATA_DIR_NAME: &str = ".cursor-byok-v3";
 fn managed_data_dir() -> Result<PathBuf, std::io::Error> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs_home_fallback())
+        .or_else(dirs_home_fallback)
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
