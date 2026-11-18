@@ -46,6 +46,11 @@ impl CaManager {
         self.dir.join("ca.key")
     }
 
+    /// Path of the public CA certificate, for host trust configuration.
+    pub fn certificate_path(&self) -> PathBuf {
+        self.cert_path()
+    }
+
     pub fn state(&self) -> Result<CaState> {
         let cert = fs::read_to_string(self.cert_path());
         let key = fs::read_to_string(self.key_path());

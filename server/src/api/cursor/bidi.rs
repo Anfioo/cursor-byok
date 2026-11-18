@@ -160,23 +160,43 @@ pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
         .map(|id| id.request_id.as_str())
         .filter(|id| !id.is_empty())
         .ok_or_else(|| Error::Protocol("BidiAppend request_id is required".into()))?;
-    if !request.data_binary.is_empty() {
-        return Err(Error::Protocol(
-            "BidiAppend data_binary is not part of the captured protocol".into(),
-        ));
-    }
-    if request.data.is_empty() {
-        return Err(Error::Protocol(
-            "BidiAppend contains no AgentClientMessage".into(),
-        ));
-    }
-    let payload = hex::decode(&request.data)
-        .map_err(|error| Error::Protocol(format!("invalid BidiAppend hex: {error}")))?;
+    let payload = append_payload(&request.data, &request.data_binary)?;
     Ok(DecodedAppend {
         request_id: request_id.into(),
         seqno: request.append_seqno,
         message: agent::AgentClientMessage::decode(payload.as_slice())?,
     })
+}
+
+/// Returns the AgentClientMessage bytes carried by a BidiAppend request.
+///
+/// Newer Cursor clients (3.x) fill only `data_binary`; older ones fill only the
+/// hex `data` field. When both are present they must describe the same payload,
+/// so a disagreement is reported instead of silently preferring one of them.
+fn append_payload(data_hex: &str, data_binary: &[u8]) -> Result<Vec<u8>> {
+    let hex_payload = if data_hex.trim().is_empty() {
+        None
+    } else {
+        Some(
+            hex::decode(data_hex.trim())
+                .map_err(|error| Error::Protocol(format!("invalid BidiAppend hex: {error}")))?,
+        )
+    };
+    match (hex_payload, data_binary.is_empty()) {
+        (Some(hex), false) => {
+            if hex != data_binary {
+                return Err(Error::Protocol(
+                    "BidiAppend data and data_binary disagree".into(),
+                ));
+            }
+            Ok(data_binary.to_vec())
+        }
+        (Some(hex), true) => Ok(hex),
+        (None, false) => Ok(data_binary.to_vec()),
+        (None, true) => Err(Error::Protocol(
+            "BidiAppend contains no AgentClientMessage".into(),
+        )),
+    }
 }
 
 pub async fn append(
@@ -208,4 +228,76 @@ pub async fn append(
         })
         .await?;
     Ok(ai::BidiAppendResponse {})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A KvClientMessage captured from Cursor; the transport only needs a
+    // well-formed AgentClientMessage here, not a full run request.
+    const KV_HEX: &str = "1a0408011a00";
+
+    fn payload() -> Vec<u8> {
+        hex::decode(KV_HEX).unwrap()
+    }
+
+    fn request(data: &str, data_binary: Vec<u8>) -> ai::BidiAppendRequest {
+        ai::BidiAppendRequest {
+            data: data.into(),
+            request_id: Some(ai::BidiRequestId {
+                request_id: "request-1".into(),
+            }),
+            append_seqno: 7,
+            data_binary,
+        }
+    }
+
+    fn assert_kv_message(decoded: DecodedAppend) {
+        assert_eq!(decoded.request_id, "request-1");
+        assert_eq!(decoded.seqno, 7);
+        assert!(matches!(
+            decoded.message.message,
+            Some(agent::agent_client_message::Message::KvClientMessage(_))
+        ));
+    }
+
+    #[test]
+    fn decodes_binary_only_appends_from_newer_clients() {
+        assert_kv_message(decode(&request("", payload())).unwrap());
+    }
+
+    #[test]
+    fn decodes_hex_only_appends_from_older_clients() {
+        assert_kv_message(decode(&request(KV_HEX, Vec::new())).unwrap());
+    }
+
+    #[test]
+    fn accepts_identical_hex_and_binary_payloads() {
+        assert_kv_message(decode(&request(KV_HEX, payload())).unwrap());
+    }
+
+    #[test]
+    fn rejects_conflicting_hex_and_binary_payloads() {
+        let error = match decode(&request(KV_HEX, vec![1, 2, 3])) {
+            Ok(_) => panic!("conflicting payloads were accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::Protocol(ref message) if message.contains("disagree")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_appends_without_payload() {
+        let error = match decode(&request("", Vec::new())) {
+            Ok(_) => panic!("an empty append was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::Protocol(ref message) if message.contains("no AgentClientMessage")),
+            "unexpected error: {error}"
+        );
+    }
 }

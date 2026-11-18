@@ -138,3 +138,50 @@ async fn bidi_append_gzip_body_is_decompressed_before_protobuf_decode() {
     assert!(text.contains("BidiAppend contains no AgentClientMessage"));
     assert!(!text.contains("protobuf decode error"));
 }
+
+#[tokio::test]
+async fn bidi_append_data_binary_reaches_the_agent_decoder() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let clients = NetworkClients::new(store.clone());
+    let registry = TransportRegistry::new(
+        store,
+        Arc::new(fake_provider::FakeProvider::default()),
+        PromptCompiler::new(assets),
+    );
+    // A captured KvClientMessage: it proves the binary payload was decoded,
+    // while carrying no model so the handler stops at the routing check.
+    let wire = ai::BidiAppendRequest {
+        request_id: Some(ai::BidiRequestId {
+            request_id: "binary-request".into(),
+        }),
+        data_binary: hex::decode("1a0408011a00").unwrap(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+
+    let response = cursor::router(registry, clients)
+        .unwrap()
+        .oneshot(
+            Request::post("/aiserver.v1.BidiService/BidiAppend")
+                .header(header::CONTENT_TYPE, "application/proto")
+                .body(Body::from(wire))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let text = std::str::from_utf8(&body).unwrap();
+    assert!(
+        text.contains("first BidiAppend message must select a model"),
+        "unexpected response: {text}"
+    );
+    assert!(!text.contains("data_binary"));
+}

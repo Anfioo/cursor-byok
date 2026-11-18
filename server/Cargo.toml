@@ -1,7 +1,7 @@
 ﻿# Defines the server crate, binaries, and dependency graph.
 [package]
 name = "cursor-server"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 publish = false
 default-run = "cursor-server"
@@ -69,4 +69,9 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+] }

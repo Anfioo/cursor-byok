@@ -1,6 +1,6 @@
 {
   "name": "Cursor 代理",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "cursor-byok —— 把 Cursor 的请求转给自建模型渠道，自带 Web 控制台。设置与数据库保存在插件的持久化目录里，首次启动自动生成一个随机访问密钥。",
   "entry": "start.cmd",
   "stopScript": "stop.cmd",

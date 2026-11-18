@@ -1,6 +1,7 @@
 //! Exposes the local desktop application integration.
 mod account;
 mod ca;
+mod environment;
 mod process;
 mod proxy;
 mod settings;
@@ -187,7 +188,15 @@ impl CursorHarness {
             .map(settings::settings_match)
             .transpose()?
             .unwrap_or(false);
-        if !settings_applied {
+        // Cursor's Node side trusts NODE_EXTRA_CA_CERTS, not the Windows root
+        // store. A new value only reaches Cursor when it is restarted, so a
+        // change counts like a settings change below.
+        let environment_changed = environment::ensure(&self.inner.ca.certificate_path())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not point NODE_EXTRA_CA_CERTS at the local CA");
+                false
+            });
+        if !settings_applied || environment_changed {
             // Terminating Cursor only makes the freshly written http.proxy take effect
             // sooner; it is optional, so a failed probe or kill must not block takeover.
             if let Err(error) = process::terminate_cursor().await {
@@ -224,6 +233,10 @@ impl CursorHarness {
 
     pub async fn disable(&self) -> Result<()> {
         settings::clear_proxy_settings()?;
+        if let Err(error) = environment::clear() {
+            // Leaving the variable behind is not a reason to keep the proxy up.
+            tracing::warn!(%error, "could not restore NODE_EXTRA_CA_CERTS");
+        }
         self.inner.proxy.lock().await.stop().await;
         Ok(())
     }
